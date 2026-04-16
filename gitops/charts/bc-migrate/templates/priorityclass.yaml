@@ -1,0 +1,13 @@
+# priorityclass.yaml — bc-migrate-service
+# Defines the PriorityClass referenced in the Deployment.
+# Polaris raises priorityClassNotSet if the pod spec lacks a priorityClassName.
+
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.service.priorityClassName }}
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+value: 100
+globalDefault: false
+description: "Priority class for bc-migrate-service — low-priority background analysis workload."

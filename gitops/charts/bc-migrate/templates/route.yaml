@@ -1,0 +1,29 @@
+# route.yaml — bc-migrate-service
+# Edge-terminated Route for Copilot Extensions webhook (HTTPS required by GitHub).
+#
+# ag-devops: Conftest hard-denies edge-terminated routes without:
+#   - app.kubernetes.io/component: frontend   OR
+#   - isb.gov.bc.ca/edge-termination-approval: <approved-YYYY-MM-DD>
+# The isb.gov.bc.ca annotation is set in values.route.annotations.
+
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "bc-migrate-service.fullname" . }}
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+    # Edge-terminated route: component tag (Conftest compliance — alternative to annotation)
+    app.kubernetes.io/component: api
+  annotations:
+    {{- toYaml .Values.service.route.annotations | nindent 4 }}
+spec:
+  host: {{ .Values.service.route.host }}
+  to:
+    kind:   Service
+    name:   {{ include "bc-migrate-service.fullname" . }}
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination:                   {{ .Values.service.route.tls.termination }}
+    insecureEdgeTerminationPolicy: {{ .Values.service.route.tls.insecureEdgeTerminationPolicy }}

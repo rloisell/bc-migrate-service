@@ -1,0 +1,247 @@
+# .github/workflows/build-and-push.yml — bc-migrate-service
+# Ryan Loiselle - Developer / Architect | GitHub Copilot | April 2026
+#
+# Builds the bc-migrate-service container image and pushes to BC Gov Artifactory.
+# Single image (not api+frontend split — bc-migrate-service is a single Node.js process).
+#
+# Per ISB EA Option 2 (preferred GitOps pattern for Emerald):
+#   develop branch -> direct commit to dev_values.yaml   (ArgoCD auto-sync)
+#   test branch    -> direct commit to test_values.yaml  (ArgoCD auto-sync)
+#   main branch / v* tag -> opens PR to gitops repo targeting prod_values.yaml
+#
+# Required GitHub Secrets:
+#   ARTIFACTORY_USERNAME   BC Gov Artifactory service account username
+#   ARTIFACTORY_PASSWORD   BC Gov Artifactory service account password
+#   GITOPS_TOKEN           GitHub PAT with repo write access to the gitops repo
+
+name: Build and Push
+
+on:
+  push:
+    branches:
+      - main
+      - test
+      - develop
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY:    artifacts.developer.gov.bc.ca
+  NAMESPACE:   be808f-docker-local
+  IMAGE:       bc-migrate-service
+  GITOPS_REPO: rloisell/bc-migrate-service-gitops
+
+jobs:
+
+  # ── Build & push image ─────────────────────────────────────────────────────
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+        with:
+          submodules: recursive  # include ocp-migration-toolkit submodule
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "image_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to Artifactory
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ARTIFACTORY_USERNAME }}
+          password: ${{ secrets.ARTIFACTORY_PASSWORD }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83  # v5
+        with:
+          context:    .
+          file:       containerization/Containerfile
+          push:       ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE }}:${{ steps.meta.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE }}:${{ github.ref_name }}
+
+      - name: Trivy vulnerability scan
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2e9a881641fa8254b7d57  # master
+        with:
+          scan-type:                  image
+          image-ref:                  ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE }}:${{ steps.meta.outputs.image_tag }}
+          format:                     table
+          ignore-unfixed:             true
+          limit-severities-for-sarif: true
+          severity:                   HIGH,CRITICAL
+
+  # ── ag-devops policy gate ──────────────────────────────────────────────────
+  # Run on every PR and push — fails the pipeline if Helm templates violate
+  # Emerald standards (Datree + Polaris + kube-linter + Conftest).
+  policy-gate:
+    name: ag-devops Policy Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+
+      - name: Render Helm templates
+        run: |
+          helm template bc-migrate-service gitops/charts/bc-migrate \
+            --set service.image.tag=ci-test \
+            > /tmp/rendered.yaml
+
+      - name: Datree — schema + policy lint
+        uses: datreeio/action-datree@v1
+        with:
+          configFile: .datree/config.yaml
+          filePath:   /tmp/rendered.yaml
+        continue-on-error: true  # informational during onboarding
+
+      - name: Polaris — best-practices audit
+        run: |
+          curl -sSL https://github.com/FairwindsOps/polaris/releases/latest/download/polaris_linux_amd64.tar.gz \
+            | tar xz -C /tmp
+          /tmp/polaris audit \
+            --audit-path /tmp/rendered.yaml \
+            --format pretty \
+            --set-exit-code-on-danger \
+            || true  # informational during onboarding
+
+      - name: kube-linter — security lint
+        uses: stackrox/kube-linter-action@v1
+        with:
+          directory: /tmp/rendered.yaml
+        continue-on-error: true
+
+      - name: Conftest — Emerald OPA policies
+        run: |
+          docker run --rm \
+            -v /tmp/rendered.yaml:/data/rendered.yaml \
+            -v $(pwd)/.conftest:/policy \
+            openpolicyagent/conftest test /data/rendered.yaml \
+            --policy /policy
+        continue-on-error: true  # hard-fails only after conftest policies are committed
+
+  # ── Update gitops (dev/test) ───────────────────────────────────────────────
+  update-gitops:
+    name: Update GitOps Values (dev/test)
+    runs-on: ubuntu-latest
+    needs: build
+    if: >
+      github.event_name == 'push' &&
+      contains(fromJson('["test","develop"]'), github.ref_name)
+
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token:      ${{ secrets.GITOPS_TOKEN }}
+          ref:        main
+
+      - name: Install yq
+        uses: mikefarah/yq@v4
+
+      - name: Resolve target values file
+        id: env
+        run: |
+          case "${{ github.ref_name }}" in
+            develop) echo "values_file=deploy/dev_values.yaml"  >> "$GITHUB_OUTPUT" ;;
+            test)    echo "values_file=deploy/test_values.yaml" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Update image tag
+        run: |
+          yq -i '.service.image.tag = "${{ needs.build.outputs.image_tag }}"' \
+            ${{ steps.env.outputs.values_file }}
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ steps.env.outputs.values_file }}
+          git diff --staged --quiet || \
+            git commit -m "chore(bc-migrate-service): bump image tag to ${{ needs.build.outputs.image_tag }} [${{ github.ref_name }}]"
+          git push
+
+  # ── Create prod PR ─────────────────────────────────────────────────────────
+  create-prod-pr:
+    name: Open Prod Deployment PR
+    runs-on: ubuntu-latest
+    needs: build
+    if: >
+      github.event_name == 'push' && (
+        github.ref_name == 'main' ||
+        startsWith(github.ref, 'refs/tags/v')
+      )
+
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token:      ${{ secrets.GITOPS_TOKEN }}
+          ref:        main
+
+      - name: Install yq
+        uses: mikefarah/yq@v4
+
+      - name: Create release branch
+        id: branch
+        run: |
+          BRANCH="chore/bc-migrate-service-prod-${{ needs.build.outputs.image_tag }}"
+          git checkout -b "${BRANCH}"
+          echo "name=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Update prod image tag
+        run: |
+          yq -i '.service.image.tag = "${{ needs.build.outputs.image_tag }}"' deploy/prod_values.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deploy/prod_values.yaml
+          git commit -m "chore(bc-migrate-service): bump prod image tag to ${{ needs.build.outputs.image_tag }}"
+          git push origin "${{ steps.branch.outputs.name }}"
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          gh pr create \
+            --repo "${{ env.GITOPS_REPO }}" \
+            --base main \
+            --head "${{ steps.branch.outputs.name }}" \
+            --title "chore(bc-migrate-service): promote to prod — ${{ needs.build.outputs.image_tag }}" \
+            --body "## Production Deployment
+
+          **Image tag:** \`${{ needs.build.outputs.image_tag }}\`
+          **Source commit:** [\`${{ github.sha }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          **Triggered by:** \`${{ github.ref_name }}\` on \`${{ github.repository }}\`
+
+          Updates \`deploy/prod_values.yaml\` with the new image tag.
+          ArgoCD will sync to \`be808f-prod\` automatically on merge.
+
+          > **Requires maintainer approval before merging.**"

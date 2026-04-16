@@ -1,0 +1,87 @@
+# values.yaml — bc-migrate-service Helm chart defaults
+# Ryan Loiselle — Developer / Architect | GitHub Copilot | April 2026
+#
+# Override per-environment settings in deploy/dev_values.yaml etc.
+
+# ── GLOBAL ────────────────────────────────────────────────────────────────────
+global:
+  openshift: true  # Required on Emerald — enables OpenShift SCC mode
+
+environment:    dev
+licencePlate:   be808f
+
+# ── SERVICE ───────────────────────────────────────────────────────────────────
+service:
+  replicaCount: 1
+
+  image:
+    repository: artifacts.developer.gov.bc.ca/be808f/bc-migrate-service
+    pullPolicy: Always
+    tag: "latest"
+
+  port: 8080
+
+  resources:
+    requests:
+      cpu:    200m
+      memory: 256Mi
+    limits:
+      cpu:    1000m
+      memory: 1Gi
+
+  # ── Pod labels — all four required by Emerald / ag-devops policy gate ───────
+  # DataClass, owner, environment are enforced by Polaris + Conftest.
+  # The ag-helm LabelData fragment can also generate these.
+  podLabels:
+    DataClass:   "Medium"
+    owner:       "jag-pssg-team"
+    environment: "development"   # production | test | development
+
+  # ── PriorityClass (Polaris priorityClassNotSet check) ─────────────────────
+  priorityClassName: bc-migrate-service-priority
+
+  route:
+    host: bc-migrate-service-be808f-dev.apps.emerald.devops.gov.bc.ca
+    annotations:
+      # Required for Medium DataClass workloads on Emerald
+      aviinfrasetting.ako.vmware.com/name: "dataclass-medium"
+      # Edge-terminated routes require this annotation (Conftest hard-deny without it)
+      isb.gov.bc.ca/edge-termination-approval: "approved-2026-04-16"
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+
+  # ── KEDA scale-to-zero (HTTP trigger) ────────────────────────────────────
+  # Scale bc-migrate-service to zero when no requests for 5 minutes.
+  # KEDA HTTP Add-on must be installed on the cluster.
+  keda:
+    enabled: true
+    scaleToZero: true
+    cooldownPeriod: 300   # seconds idle before scaling to zero
+    targetPendingRequests: 100
+
+  # ── External Secrets (Vault) ───────────────────────────────────────────────
+  # ExternalSecret will create a k8s Secret named "bc-migrate-service-secrets"
+  # from Vault path secret/data/be808f-dev/bc-migrate-service
+  externalSecrets:
+    enabled: true
+    vaultPath: "secret/data/be808f-dev/bc-migrate-service"
+    secretKeys:
+      - GITHUB_APP_ID
+      - GITHUB_APP_PRIVATE_KEY
+      - GITHUB_APP_WEBHOOK_SECRET
+      - GITHUB_MODELS_API_KEY
+      - OC_SILVER_TOKEN
+      - OC_GOLD_TOKEN
+
+# ── SERVICE ACCOUNT ───────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""

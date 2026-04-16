@@ -1,0 +1,26 @@
+# applications/argocd/app-prod.yaml — bc-migrate-service prod
+# Ryan Loiselle — Developer / Architect | GitHub Copilot | April 2026
+#
+# Prod does NOT use automated sync — image tag updates require a PR + manual ArgoCD sync.
+# Apply with: kubectl apply -f gitops/applications/argocd/app-prod.yaml -n be808f-tools
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bc-migrate-service-prod
+spec:
+  destination:
+    namespace: be808f-prod
+    server: https://kubernetes.default.svc
+  source:
+    path: charts/bc-migrate
+    repoURL: git@github.com:rloisell/bc-migrate-service-gitops.git
+    targetRevision: main
+    helm:
+      valueFiles:
+        - $values/deploy/prod_values.yaml
+  project: be808f
+  syncPolicy:
+    # Prod: manual sync only — no automated prune/selfHeal
+    syncOptions:
+      - Validate=true

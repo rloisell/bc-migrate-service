@@ -1,0 +1,94 @@
+# networkpolicies.yaml — bc-migrate-service
+# Ryan Loiselle — Developer / Architect | GitHub Copilot | April 2026
+#
+# Authored via ag-helm intent API (AllowIngressFrom / AllowEgressTo).
+# Conftest hard-denies raw NetworkPolicy objects that lack peers or ports,
+# so all policies use the ag-helm template library fragments.
+#
+# Traffic model:
+#   Ingress: from OpenShift router only (Copilot webhook + healthz)
+#   Egress:
+#     - GitHub API / GitHub Models API (internet, TCP 443) — CSBC FWCR required per env
+#     - OpenShift API servers — Silver + Gold (internet, TCP 6443) — CSBC FWCR required
+#     - DNS (in-cluster, UDP/TCP 53)
+
+# ── INGRESS: from OpenShift router ───────────────────────────────────────────
+apiVersion: ag-helm.bcgov.ca/v1
+kind: NetworkPolicyFragment
+metadata:
+  name: {{ include "bc-migrate-service.fullname" . }}-allow-router-ingress
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+spec:
+  template: AllowIngressFrom
+  params:
+    namespaces:
+      - openshift-ingress
+    ports:
+      - port: {{ .Values.service.port }}
+        protocol: TCP
+
+---
+# ── EGRESS: GitHub API + GitHub Models API (internet, HTTPS) ─────────────────
+# Requires CSBC FWCR approval per environment.
+# Annotation documents the internet egress justification (Conftest hard-deny
+# on 0.0.0.0/0 egress without justification + approvedBy annotations).
+apiVersion: ag-helm.bcgov.ca/v1
+kind: NetworkPolicyFragment
+metadata:
+  name: {{ include "bc-migrate-service.fullname" . }}-allow-github-egress
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+  annotations:
+    justification: "bc-migrate-service must reach GitHub API (api.github.com) and GitHub Models \
+API (models.inference.ai.azure.com) to authenticate the Copilot Extension, generate reports, \
+and upload artifacts."
+    approvedBy: "ryan.loiselle@gov.bc.ca"
+spec:
+  template: AllowEgressTo
+  params:
+    internet: true
+    ports:
+      - port: 443
+        protocol: TCP
+
+---
+# ── EGRESS: OpenShift cluster API (internet, TCP 6443) ───────────────────────
+# Used by the collect.sh phase to read OCP namespace resources.
+apiVersion: ag-helm.bcgov.ca/v1
+kind: NetworkPolicyFragment
+metadata:
+  name: {{ include "bc-migrate-service.fullname" . }}-allow-ocp-api-egress
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+  annotations:
+    justification: "bc-migrate-service must reach the Silver and Gold OCP API servers \
+(api.silver.devops.gov.bc.ca:6443, api.gold.devops.gov.bc.ca:6443) to collect \
+namespace migration data on behalf of the requesting team."
+    approvedBy: "ryan.loiselle@gov.bc.ca"
+spec:
+  template: AllowEgressTo
+  params:
+    internet: true
+    ports:
+      - port: 6443
+        protocol: TCP
+
+---
+# ── EGRESS: in-cluster DNS ───────────────────────────────────────────────────
+apiVersion: ag-helm.bcgov.ca/v1
+kind: NetworkPolicyFragment
+metadata:
+  name: {{ include "bc-migrate-service.fullname" . }}-allow-dns-egress
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+spec:
+  template: AllowEgressTo
+  params:
+    namespaces:
+      - openshift-dns
+    ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP

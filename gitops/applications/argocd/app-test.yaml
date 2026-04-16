@@ -1,0 +1,27 @@
+# applications/argocd/app-test.yaml — bc-migrate-service test
+# Ryan Loiselle — Developer / Architect | GitHub Copilot | April 2026
+#
+# Apply with: kubectl apply -f gitops/applications/argocd/app-test.yaml -n be808f-tools
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bc-migrate-service-test
+spec:
+  destination:
+    namespace: be808f-test
+    server: https://kubernetes.default.svc
+  source:
+    path: charts/bc-migrate
+    repoURL: git@github.com:rloisell/bc-migrate-service-gitops.git
+    targetRevision: test
+    helm:
+      valueFiles:
+        - $values/deploy/test_values.yaml
+  project: be808f
+  syncPolicy:
+    automated:
+      prune:     true
+      selfHeal:  true
+    syncOptions:
+      - Validate=true

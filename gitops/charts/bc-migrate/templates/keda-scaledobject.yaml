@@ -1,0 +1,30 @@
+# keda-scaledobject.yaml — bc-migrate-service
+# KEDA HTTP Add-on ScaledObject — scales bc-migrate-service to zero when idle.
+# The HTTP Add-on intercepts requests and wakes the service when needed.
+# Requires KEDA HTTP Add-on installed in the cluster (keda-add-ons-http namespace).
+
+{{- if .Values.service.keda.enabled }}
+apiVersion: http.keda.sh/v1alpha1
+kind: HTTPScaledObject
+metadata:
+  name: {{ include "bc-migrate-service.fullname" . }}
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ .Values.service.route.host }}
+  pathPrefixes:
+    - /api/v1/extension
+    - /health
+  scaledownPeriod: {{ .Values.service.keda.cooldownPeriod }}
+  scaleTargetRef:
+    apiVersion:  apps/v1
+    kind:        Deployment
+    name:        {{ include "bc-migrate-service.fullname" . }}
+    service:     {{ include "bc-migrate-service.fullname" . }}
+    port:        {{ .Values.service.port }}
+  replicas:
+    min: {{ if .Values.service.keda.scaleToZero }}0{{ else }}1{{ end }}
+    max: {{ .Values.service.autoscaling.maxReplicas | default 3 }}
+  targetPendingRequests: {{ .Values.service.keda.targetPendingRequests }}
+{{- end }}

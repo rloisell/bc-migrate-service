@@ -1,0 +1,72 @@
+# Containerfile — bc-migrate-service
+# Ryan Loiselle — Developer / Architect | GitHub Copilot | April 2026
+#
+# Node.js 22 LTS + pandoc + chromium-headless for PDF rendering.
+# Follows BC Gov Emerald container standards (port 8080, non-root USER 1001).
+# See rl-project-template/containerization/Containerfile.api for the base pattern.
+
+# ── BUILD STAGE ───────────────────────────────────────────────────────────────
+FROM node:22-slim AS build
+WORKDIR /app
+
+# Copy dependency manifests first for layer cache optimisation
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci --ignore-scripts
+
+# Copy source and compile TypeScript
+COPY src/ ./src/
+RUN npm run build
+
+
+# ── RUNTIME STAGE ────────────────────────────────────────────────────────────
+FROM node:22-slim AS runtime
+WORKDIR /app
+
+# Install system dependencies:
+#   pandoc            — markdown → HTML rendering
+#   chromium          — HTML → PDF headless rendering
+#   bash, curl, jq    — collect.sh dependencies (oc and yq are mounted via initContainer or PATH)
+#   ca-certificates   — TLS verification for GitHub API, OpenShift API
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pandoc \
+      chromium \
+      bash \
+      curl \
+      jq \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Tell Puppeteer/Chrome where chromium lives
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV CHROME_PATH=/usr/bin/chromium
+
+# Production Node modules only
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+# Copy compiled output from build stage
+COPY --from=build /app/dist ./dist
+
+# Copy the ocp-migration-toolkit submodule (templates, scripts)
+COPY submodules/ocp-migration-toolkit/ ./submodules/ocp-migration-toolkit/
+
+# Non-root user — OpenShift assigns a random UID at runtime;
+# group 0 ownership ensures the random UID can read/write the workdir.
+RUN groupadd -r appgroup && useradd -r -g appgroup -u 1001 appuser \
+    && chown -R 1001:0 /app \
+    && chmod -R g=u /app
+
+# Scratch space for analysis jobs (tmpfs in container / emptyDir in OCP)
+RUN mkdir -p /tmp/bc-migrate-work && chown -R 1001:0 /tmp/bc-migrate-work
+
+USER 1001
+
+# Standard BC Gov OpenShift port
+EXPOSE 8080
+
+ENV PORT=8080
+ENV NODE_ENV=production
+ENV WORK_DIR=/tmp/bc-migrate-work
+ENV TOOLKIT_PATH=/app/submodules/ocp-migration-toolkit
+
+ENTRYPOINT ["node", "dist/index.js"]

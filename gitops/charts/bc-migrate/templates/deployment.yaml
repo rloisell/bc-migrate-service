@@ -1,0 +1,134 @@
+# deployment.yaml — bc-migrate-service
+# Ryan Loisell — Developer / Architect | GitHub Copilot | April 2026
+#
+# ag-devops policy checks:
+#   ✅ DataClass, owner, environment pod labels
+#   ✅ PriorityClass set (Polaris priorityClassNotSet)
+#   ✅ livenessProbe + readinessProbe
+#   ✅ resource requests + limits
+#   ✅ non-root securityContext (runAsNonRoot: true, allowPrivilegeEscalation: false)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bc-migrate-service.fullname" . }}
+  labels:
+    {{- include "bc-migrate-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.service.autoscaling.enabled }}
+  replicas: {{ .Values.service.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "bc-migrate-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "bc-migrate-service.labels" . | nindent 8 }}
+        # Required ag-devops pod labels — all three must be present
+        DataClass:   {{ .Values.service.podLabels.DataClass | quote }}
+        owner:       {{ .Values.service.podLabels.owner | quote }}
+        environment: {{ .Values.service.podLabels.environment | quote }}
+    spec:
+      serviceAccountName: {{ include "bc-migrate-service.serviceAccountName" . }}
+
+      # PriorityClass — Polaris priorityClassNotSet check
+      priorityClassName: {{ .Values.service.priorityClassName }}
+
+      securityContext:
+        runAsNonRoot:        true
+        runAsUser:           1001
+        fsGroup:             0     # group 0 for OpenShift random UID compatibility
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: bc-migrate-service
+          image: "{{ .Values.service.image.repository }}:{{ .Values.service.image.tag }}"
+          imagePullPolicy: {{ .Values.service.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+            - name: NODE_ENV
+              value: "production"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: WORK_DIR
+              value: "/tmp/bc-migrate-work"
+            - name: TOOLKIT_PATH
+              value: "/app/submodules/ocp-migration-toolkit"
+            # Secrets from Vault via ExternalSecret
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bc-migrate-service.fullname" . }}-secrets
+                  key: GITHUB_APP_ID
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bc-migrate-service.fullname" . }}-secrets
+                  key: GITHUB_APP_PRIVATE_KEY
+            - name: GITHUB_APP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bc-migrate-service.fullname" . }}-secrets
+                  key: GITHUB_APP_WEBHOOK_SECRET
+            - name: GITHUB_MODELS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bc-migrate-service.fullname" . }}-secrets
+                  key: GITHUB_MODELS_API_KEY
+            - name: OC_SILVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bc-migrate-service.fullname" . }}-secrets
+                  key: OC_SILVER_TOKEN
+                  optional: true
+            - name: OC_GOLD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bc-migrate-service.fullname" . }}-secrets
+                  key: OC_GOLD_TOKEN
+                  optional: true
+
+          resources:
+            {{- toYaml .Values.service.resources | nindent 12 }}
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot:             true
+            runAsUser:                1001
+            capabilities:
+              drop: ["ALL"]
+
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds:       20
+            timeoutSeconds:      5
+            failureThreshold:    3
+
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds:       10
+            timeoutSeconds:      3
+            failureThreshold:    3
+
+          volumeMounts:
+            - name: tmp-work
+              mountPath: /tmp/bc-migrate-work
+
+      volumes:
+        - name: tmp-work
+          emptyDir:
+            medium: ""
+            sizeLimit: 2Gi

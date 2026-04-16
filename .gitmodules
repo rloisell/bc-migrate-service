@@ -1,0 +1,9 @@
+[submodule ".github/agents"]
+	path = .github/agents
+	url = https://github.com/rloisell/rl-agents-n-skills.git
+	branch = main
+
+[submodule "submodules/ocp-migration-toolkit"]
+	path = submodules/ocp-migration-toolkit
+	url = https://github.com/rloisell/ocp-migration-toolkit.git
+	branch = main
