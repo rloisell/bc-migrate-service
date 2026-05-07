@@ -1,5 +1,20 @@
 # bc-migrate-service
 
+> ⚠️ **DEPRECATED — Tier 3 was scaled back to Tier 2 (May 2026).**
+>
+> This repository is an **early prototype** of an `@bc-migrate` GitHub Copilot
+> Extension. It is **not deployed** to Emerald, **not maintained**, and there are
+> no current plans to ship it.
+>
+> The supported delivery model is the **Tier 2 GitHub Composite Action** in
+> [`ocp-migration-toolkit`](https://github.com/rloisell/ocp-migration-toolkit)
+> and the **Tier 1 VS Code skill** `ocp-migration-analyst` in
+> [`rl-agents-n-skills`](https://github.com/rloisell/rl-agents-n-skills).
+>
+> Use those instead. The content below is retained for reference only.
+
+---
+
 **Tier 3 of the OCP Migration Toolkit — GitHub Copilot Extension.**
 
 Expose migration analysis as a service: any BC Gov team types
